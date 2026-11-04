@@ -1,0 +1,18 @@
+# Ambiente virtual do Python
+.venv/
+
+# Variáveis de ambiente e segredos
+.env
+
+# Arquivos temporários do Python
+__pycache__/
+*.pyc
+
+# Arquivos do macOS
+.DS_Store
+
+# Planilhas geradas pelo script (recrie com: python3 src/gerar_dados.py)
+data/raw/
+
+# Configurações pessoais do Claude Code
+.claude/settings.local.json
