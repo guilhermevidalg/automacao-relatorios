@@ -17,6 +17,9 @@ data/raw/
 # Base limpa gerada pela limpeza (recrie com: python3 src/limpeza.py)
 data/processed/
 
+# Relatórios gerados (recrie com: .venv/bin/python src/relatorio.py)
+output/
+
 # Arquivos de log gerados ao rodar os scripts
 logs/
 *.log
