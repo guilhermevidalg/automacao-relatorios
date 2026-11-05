@@ -14,5 +14,12 @@ __pycache__/
 # Planilhas geradas pelo script (recrie com: python3 src/gerar_dados.py)
 data/raw/
 
+# Base limpa gerada pela limpeza (recrie com: python3 src/limpeza.py)
+data/processed/
+
+# Arquivos de log gerados ao rodar os scripts
+logs/
+*.log
+
 # Configurações pessoais do Claude Code
 .claude/settings.local.json
