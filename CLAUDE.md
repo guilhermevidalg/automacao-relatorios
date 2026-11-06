@@ -25,6 +25,8 @@ tem pandas). Use `.venv/bin/python` ou ative antes com `source .venv/bin/activat
 .venv/bin/python src/gerar_dados.py   # Fase 1: gera as planilhas sujas em data/raw/
 .venv/bin/python src/limpeza.py       # Fase 2: lê, limpa e salva a base consolidada
 .venv/bin/python src/relatorio.py     # Fase 3: gera output/relatorio_vendas_2026.xlsx
+.venv/bin/python src/email_sender.py --dry-run  # Fase 4: mostra o e-mail sem enviar
+.venv/bin/python src/email_sender.py            # Fase 4: envia o relatório pelo Gmail
 ```
 
 ## Estado atual
@@ -41,6 +43,8 @@ tem pandas). Use `.venv/bin/python` ou ative antes com `source .venv/bin/activat
 - **Fase 3 (concluída)** — `src/relatorio.py`: lê a base limpa e gera
   `output/relatorio_vendas_2026.xlsx` com as abas Resumo, Por filial,
   Por produto e Base consolidada
+- **Fase 4 (implementada, falta o 1º envio real)** — `src/email_sender.py`: envia o
+  relatório como anexo pelo Gmail, com resumo de KPIs em HTML; `--dry-run` só mostra
 
 Colunas da base limpa: `data, filial, produto, categoria, vendedor, quantidade,
 preco_unitario, faturamento`.
@@ -92,3 +96,18 @@ preco_unitario, faturamento`.
   congelado em A3; tabelas lado a lado (uma coluna vazia entre elas)
 - **Meses** em português por dicionário próprio (`jan/2026`), sem `locale`
 - **Base ausente**: mensagem pedindo para rodar `src/limpeza.py` e `sys.exit(1)`
+
+## Decisões da Fase 4 (e-mail)
+- **SMTP do Gmail** com `smtplib.SMTP_SSL` na porta 465 (criptografado desde o início)
+- **Credenciais** só no `.env` (modelo em `.env.example`), lidas com `python-dotenv`
+  e `override=True` (o `.env` prevalece sobre variáveis do terminal). Variáveis:
+  `GMAIL_REMETENTE`, `GMAIL_SENHA_APP` (senha de app; espaços removidos),
+  `EMAIL_DESTINATARIOS` (separados por vírgula)
+- **KPIs** reaproveitados de `relatorio.calcular_kpis` (mesmos números da aba Resumo)
+- **Corpo**: texto simples + HTML alternativo (`EmailMessage.add_alternative`),
+  estilos inline (programas de e-mail ignoram `<style>`); valores em formato
+  brasileiro (`R$ 1.234,56`)
+- **`--dry-run`**: não exige a senha; mostra a prévia no terminal e salva o HTML em
+  `output/previa_email.html`
+- **Erros**: cada caso (sem `.env`, variável vazia, relatório ausente, login
+  recusado, destinatário recusado, sem conexão) tem mensagem própria e `sys.exit(1)`
