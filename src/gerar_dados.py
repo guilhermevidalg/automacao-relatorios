@@ -1,19 +1,25 @@
 """Gera planilhas de vendas fictícias (e propositalmente "sujas") por filial.
 
-Gera 5 planilhas .xlsx em data/raw/ (uma por filial), cada uma com cerca de
-300 vendas de 2026.
+Modo anual (sem --mes): gera 5 planilhas .xlsx em data/raw/ (uma por filial),
+cada uma com cerca de 300 vendas de 2026.
+Modo mensal (--mes AAAA-MM): gera as 5 planilhas só daquele mês, com cerca de
+100 vendas por filial, em data/raw/AAAA-MM/. A semente depende do mês: cada mês
+tem dados diferentes, mas sempre os mesmos se o script for rodado de novo.
 Os problemas de qualidade (nomes de colunas, formatos de data, preços em texto,
 duplicatas, valores faltando etc.) são diferentes em cada filial, para simular
 dados reais vindos de equipes que não seguem um padrão.
 
 Uso:
-    python3 src/gerar_dados.py
+    .venv/bin/python src/gerar_dados.py               # ano de 2026 inteiro
+    .venv/bin/python src/gerar_dados.py --mes 2026-10 # só outubro de 2026
 """
 
-from pathlib import Path
+import argparse
 
 import numpy as np
 import pandas as pd
+
+from periodo import adicionar_argumento_mes, nome_do_mes, pasta_raw
 
 # ---------------------------------------------------------------------------
 # Constantes
@@ -21,11 +27,8 @@ import pandas as pd
 
 SEED = 42  # semente fixa: garante que os dados gerados sejam sempre os mesmos
 ANO = 2026
-VENDAS_POR_FILIAL = 300
-
-# Pasta de saída calculada a partir do local deste arquivo, para o script
-# funcionar independentemente da pasta de onde for executado.
-PASTA_SAIDA = Path(__file__).resolve().parent.parent / "data" / "raw"
+VENDAS_POR_FILIAL = 300      # modo anual
+VENDAS_POR_FILIAL_MES = 100  # modo mensal (o suficiente para a "sujeira" aparecer)
 
 # Colunas "oficiais" usadas internamente antes de sujar os dados.
 COLUNAS_PADRAO = ["data", "produto", "categoria", "quantidade", "preco_unitario", "vendedor"]
@@ -123,20 +126,20 @@ CONFIG_FILIAIS = {
 # Geração dos dados limpos
 # ---------------------------------------------------------------------------
 
-def gerar_vendas_limpas(filial, rng, quantidade=VENDAS_POR_FILIAL):
+def gerar_vendas_limpas(filial, rng, quantidade, data_inicial, numero_dias):
     """Gera um DataFrame com vendas corretas (sem sujeira) de uma filial.
 
     Args:
         filial: nome da filial (chave de VENDEDORES).
         rng: gerador de números aleatórios do numpy.
         quantidade: número de vendas a gerar.
+        data_inicial: primeiro dia do período (pd.Timestamp).
+        numero_dias: quantos dias o período tem (365 para o ano, 31 para outubro...).
 
     Returns:
         DataFrame com as colunas de COLUNAS_PADRAO, ordenado por data.
     """
-    inicio = pd.Timestamp(f"{ANO}-01-01")
-    dias_no_ano = 366 if pd.Timestamp(f"{ANO}-12-31").is_leap_year else 365
-    datas = inicio + pd.to_timedelta(rng.integers(0, dias_no_ano, quantidade), unit="D")
+    datas = data_inicial + pd.to_timedelta(rng.integers(0, numero_dias, quantidade), unit="D")
 
     indices_produtos = rng.integers(0, len(CATALOGO), quantidade)
     produtos = [CATALOGO[i][0] for i in indices_produtos]
@@ -299,23 +302,57 @@ def salvar_planilha(df, caminho, linha_cabecalho=1, titulo=None):
             escritor.sheets["Vendas"]["A1"] = titulo
 
 
-def main():
-    """Gera e salva as planilhas sujas de todas as filiais."""
-    PASTA_SAIDA.mkdir(parents=True, exist_ok=True)
+def parametros_periodo(mes=None):
+    """Devolve (data inicial, nº de dias, vendas por filial, texto do período).
+
+    mes=None: ano de 2026 inteiro; senão, só o mês indicado (pd.Period).
+    """
+    if mes is None:
+        inicio = pd.Timestamp(f"{ANO}-01-01")
+        dias = 366 if inicio.is_leap_year else 365
+        return inicio, dias, VENDAS_POR_FILIAL, str(ANO)
+    return mes.start_time, mes.days_in_month, VENDAS_POR_FILIAL_MES, nome_do_mes(mes)
+
+
+def criar_gerador(indice_filial, mes=None):
+    """Cria o gerador de números aleatórios de uma filial.
+
+    Modo anual: semente SEED + índice (os mesmos dados de sempre).
+    Modo mensal: semente [ano, mês, índice]. O numpy aceita uma lista como
+    semente, e cada combinação gera números diferentes. Somar os números
+    (ex.: 202610 + índice) faria meses e filiais diferentes colidirem.
+    """
+    if mes is None:
+        return np.random.default_rng(SEED + indice_filial)
+    return np.random.default_rng([mes.year, mes.month, indice_filial])
+
+
+def executar(mes=None):
+    """Gera e salva as planilhas sujas de todas as filiais (do ano ou de um mês)."""
+    pasta_saida = pasta_raw(mes)
+    pasta_saida.mkdir(parents=True, exist_ok=True)
+    inicio, dias, vendas_por_filial, texto_periodo = parametros_periodo(mes)
 
     for indice, (filial, config) in enumerate(CONFIG_FILIAIS.items()):
         # Um gerador por filial: cada uma tem dados próprios, mas sempre reproduzíveis.
-        rng = np.random.default_rng(SEED + indice)
+        rng = criar_gerador(indice, mes)
 
-        df = gerar_vendas_limpas(filial, rng)
+        df = gerar_vendas_limpas(filial, rng, vendas_por_filial, inicio, dias)
         df = aplicar_sujeira(df, config, rng)
 
-        caminho = PASTA_SAIDA / config["arquivo"]
-        titulo = f"Relatório de Vendas – Filial {filial} – {ANO}"
+        caminho = pasta_saida / config["arquivo"]
+        titulo = f"Relatório de Vendas – Filial {filial} – {texto_periodo}"
         salvar_planilha(df, caminho, config["linha_cabecalho"], titulo)
         print(f"{config['arquivo']}: {len(df)} linhas")
 
-    print(f"Planilhas salvas em {PASTA_SAIDA}")
+    print(f"Planilhas salvas em {pasta_saida}")
+
+
+def main():
+    """Lê a opção --mes e gera as planilhas."""
+    parser = argparse.ArgumentParser(description="Gera planilhas de vendas fictícias e sujas.")
+    adicionar_argumento_mes(parser)
+    executar(parser.parse_args().mes)
 
 
 if __name__ == "__main__":

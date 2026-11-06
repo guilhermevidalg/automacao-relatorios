@@ -15,6 +15,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from periodo import pasta_raw
+
 # Cada módulo usa o seu próprio "logger"; a configuração (onde gravar,
 # formato das mensagens) é feita uma única vez em limpeza.py.
 log = logging.getLogger(__name__)
@@ -22,8 +24,6 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
-
-PASTA_RAW = Path(__file__).resolve().parent.parent / "data" / "raw"
 
 COLUNAS_PADRAO = ["data", "produto", "categoria", "quantidade", "preco_unitario", "vendedor"]
 
@@ -154,14 +154,19 @@ def ler_planilha(caminho):
     return df
 
 
-def ler_todas_planilhas(pasta=PASTA_RAW):
-    """Lê todas as planilhas .xlsx da pasta e junta em um único DataFrame."""
+def ler_todas_planilhas(pasta=None, comando_gerar=".venv/bin/python src/gerar_dados.py"):
+    """Lê todas as planilhas .xlsx da pasta e junta em um único DataFrame.
+
+    Args:
+        pasta: pasta das planilhas; por padrão, data/raw/ (modo anual).
+        comando_gerar: comando sugerido na mensagem de erro se a pasta estiver vazia.
+    """
+    pasta = pasta_raw() if pasta is None else Path(pasta)
     # Arquivos que começam com "~$" são temporários do Excel (planilha aberta).
-    arquivos = sorted(p for p in Path(pasta).glob("*.xlsx") if not p.name.startswith("~$"))
+    arquivos = sorted(p for p in pasta.glob("*.xlsx") if not p.name.startswith("~$"))
     if not arquivos:
         raise FileNotFoundError(
-            f"Nenhuma planilha encontrada em {pasta}. "
-            "Rode primeiro: python3 src/gerar_dados.py"
+            f"Nenhuma planilha encontrada em {pasta}. Rode primeiro: {comando_gerar}"
         )
 
     tabelas = [ler_planilha(caminho) for caminho in arquivos]

@@ -7,23 +7,33 @@ Etapas, nesta ordem:
 3. padroniza textos (espaços e maiúsculas/minúsculas);
 4. trata valores faltantes;
 5. remove duplicatas e "quase duplicatas";
-6. calcula o faturamento e salva a base limpa em CSV.
+6. (só no modo mensal) remove vendas com data fora do mês;
+7. calcula o faturamento e salva a base limpa em CSV.
 
 Tudo o que é removido ou corrigido é registrado em log (terminal e
 logs/limpeza.log).
 
 Uso:
-    python3 src/limpeza.py
+    .venv/bin/python src/limpeza.py                # data/raw/ -> vendas_consolidadas.csv
+    .venv/bin/python src/limpeza.py --mes 2026-10  # data/raw/2026-10/ -> vendas_2026-10.csv
 """
 
+import argparse
 import logging
 import re
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 
 from leitura import ler_todas_planilhas, remover_acentos
+from periodo import (
+    PASTA_PROJETO,
+    adicionar_argumento_mes,
+    arquivo_base,
+    complemento_comando,
+    nome_do_mes,
+    pasta_raw,
+)
 
 log = logging.getLogger(__name__)
 
@@ -31,9 +41,8 @@ log = logging.getLogger(__name__)
 # Constantes
 # ---------------------------------------------------------------------------
 
-PASTA_PROJETO = Path(__file__).resolve().parent.parent
-ARQUIVO_SAIDA = PASTA_PROJETO / "data" / "processed" / "vendas_consolidadas.csv"
 ARQUIVO_LOG = PASTA_PROJETO / "logs" / "limpeza.log"
+FORMATO_LOG = "%(asctime)s | %(levelname)-7s | %(message)s"
 
 COLUNAS_TEXTO = ["produto", "categoria", "vendedor"]
 
@@ -60,17 +69,28 @@ INICIO_DATAS_EXCEL = pd.Timestamp("1899-12-30")
 # ---------------------------------------------------------------------------
 
 def configurar_log():
-    """Configura o log para aparecer no terminal e ser gravado em logs/limpeza.log."""
+    """Configura o log para aparecer no terminal (o arquivo é tratado em executar)."""
+    logging.basicConfig(level=logging.INFO, format=FORMATO_LOG, datefmt="%H:%M:%S")
+
+
+def abrir_log_arquivo():
+    """Passa a gravar o log também em logs/limpeza.log (sobrescrito a cada execução).
+
+    O "handler" (destino do log) é ligado ao logger principal e devolvido,
+    para ser desligado no fim da limpeza. Assim o arquivo funciona tanto
+    rodando este script sozinho quanto dentro do pipeline (main.py).
+    """
     ARQUIVO_LOG.parent.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s | %(levelname)-7s | %(message)s",
-        datefmt="%H:%M:%S",
-        handlers=[
-            logging.StreamHandler(),  # terminal
-            logging.FileHandler(ARQUIVO_LOG, mode="w", encoding="utf-8"),  # arquivo (sobrescrito a cada execução)
-        ],
-    )
+    arquivo = logging.FileHandler(ARQUIVO_LOG, mode="w", encoding="utf-8")
+    arquivo.setFormatter(logging.Formatter(FORMATO_LOG, datefmt="%H:%M:%S"))
+    logging.getLogger().addHandler(arquivo)
+    return arquivo
+
+
+def fechar_log_arquivo(arquivo):
+    """Desliga e fecha o arquivo de log aberto por abrir_log_arquivo."""
+    logging.getLogger().removeHandler(arquivo)
+    arquivo.close()
 
 
 def contagem_por_filial(df):
@@ -340,6 +360,26 @@ def remover_duplicatas(df, df_original):
 
 
 # ---------------------------------------------------------------------------
+# Mês (só no modo mensal)
+# ---------------------------------------------------------------------------
+
+def remover_fora_do_mes(df, mes):
+    """Remove vendas cuja data não pertence ao mês do relatório.
+
+    Args:
+        df: dados com a coluna "data" já convertida.
+        mes: período mensal do pandas (ex.: 2026-10).
+    """
+    fora = df["data"].dt.to_period("M") != mes
+    if fora.any():
+        log.warning(
+            "Mês: %d vendas fora de %s removidas (%s)",
+            fora.sum(), nome_do_mes(mes), contagem_por_filial(df[fora]),
+        )
+    return df[~fora]
+
+
+# ---------------------------------------------------------------------------
 # Faturamento e gravação
 # ---------------------------------------------------------------------------
 
@@ -350,8 +390,13 @@ def calcular_faturamento(df):
     return df
 
 
-def limpar_dados(df):
-    """Executa todas as etapas de limpeza, na ordem certa."""
+def limpar_dados(df, mes=None):
+    """Executa todas as etapas de limpeza, na ordem certa.
+
+    Args:
+        df: dados brutos, como vieram de ler_todas_planilhas.
+        mes: período mensal; se informado, descarta vendas de outros meses.
+    """
     linhas_lidas = len(df)
 
     df = remover_linhas_vazias(df)
@@ -363,6 +408,8 @@ def limpar_dados(df):
     df = padronizar_textos(df)
     df = tratar_faltantes(df)
     df = remover_duplicatas(df, df_original)
+    if mes is not None:
+        df = remover_fora_do_mes(df, mes)
     df = calcular_faturamento(df)
 
     df = df[ORDEM_COLUNAS_SAIDA].sort_values(["data", "filial"]).reset_index(drop=True)
@@ -374,19 +421,37 @@ def limpar_dados(df):
     return df
 
 
-def salvar_base(df, caminho=ARQUIVO_SAIDA):
+def salvar_base(df, caminho):
     """Salva a base limpa em CSV (UTF-8 com BOM, para o Excel ler os acentos)."""
     caminho.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(caminho, index=False, encoding="utf-8-sig", date_format="%Y-%m-%d")
     log.info("Base limpa salva em %s", caminho.relative_to(PASTA_PROJETO))
 
 
+def executar(mes=None):
+    """Lê as planilhas brutas, limpa os dados e salva a base consolidada.
+
+    Args:
+        mes: período mensal (ex.: 2026-10) ou None para o ano inteiro.
+    """
+    arquivo_log = abrir_log_arquivo()
+    try:
+        comando_gerar = ".venv/bin/python src/gerar_dados.py" + complemento_comando(mes)
+        df = ler_todas_planilhas(pasta_raw(mes), comando_gerar)
+        df = limpar_dados(df, mes)
+        salvar_base(df, arquivo_base(mes))
+    finally:
+        # "finally" roda mesmo se der erro: o arquivo de log sempre é fechado.
+        fechar_log_arquivo(arquivo_log)
+
+
 def main():
-    """Lê as planilhas de data/raw/, limpa os dados e salva a base consolidada."""
+    """Lê a opção --mes e executa a limpeza."""
+    parser = argparse.ArgumentParser(description="Lê, limpa e consolida as planilhas de vendas.")
+    adicionar_argumento_mes(parser)
+    argumentos = parser.parse_args()
     configurar_log()
-    df = ler_todas_planilhas()
-    df = limpar_dados(df)
-    salvar_base(df)
+    executar(argumentos.mes)
 
 
 if __name__ == "__main__":

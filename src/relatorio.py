@@ -1,10 +1,14 @@
 """Geração do relatório de vendas em Excel a partir da base limpa.
 
-Lê data/processed/vendas_consolidadas.csv (gerada por src/limpeza.py) e cria
-output/relatorio_vendas_2026.xlsx com quatro abas:
+Modo anual (sem --mes): lê data/processed/vendas_consolidadas.csv e cria
+output/relatorio_vendas_2026.xlsx.
+Modo mensal (--mes AAAA-MM): lê data/processed/vendas_AAAA-MM.csv e cria
+output/relatorio_vendas_AAAA-MM.xlsx, com comparação com o mês anterior.
 
+O relatório tem quatro abas:
 1. Resumo: indicadores principais (KPIs);
-2. Por filial: faturamento por filial e evolução mês a mês, com gráficos;
+2. Por filial: faturamento por filial e evolução mês a mês (ou semana a
+   semana, no modo mensal), com gráficos;
 3. Por produto: top 10 produtos por faturamento e por quantidade;
 4. Base consolidada: os dados limpos, com filtro automático.
 
@@ -13,11 +17,12 @@ aplica a formatação e cria os gráficos nativos do Excel.
 
 Uso:
     .venv/bin/python src/relatorio.py
+    .venv/bin/python src/relatorio.py --mes 2026-10
 """
 
+import argparse
 import logging
 import sys
-from pathlib import Path
 
 import pandas as pd
 from openpyxl import Workbook
@@ -27,15 +32,22 @@ from openpyxl.chart.layout import Layout, ManualLayout
 from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
+from periodo import (
+    MESES_ABREVIADOS,
+    PASTA_PROJETO,
+    adicionar_argumento_mes,
+    arquivo_base,
+    arquivo_relatorio,
+    complemento_comando,
+    mes_anterior,
+    nome_do_mes,
+)
+
 log = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constantes
 # ---------------------------------------------------------------------------
-
-PASTA_PROJETO = Path(__file__).resolve().parent.parent
-ARQUIVO_BASE = PASTA_PROJETO / "data" / "processed" / "vendas_consolidadas.csv"
-ARQUIVO_RELATORIO = PASTA_PROJETO / "output" / "relatorio_vendas_2026.xlsx"
 
 # Formatos de exibição do Excel. A célula guarda o número puro (ex.: 1234.56)
 # e o formato só muda a aparência. Num Excel em português, "R$" #,##0.00
@@ -44,6 +56,9 @@ FORMATO_REAIS = '"R$" #,##0.00'
 FORMATO_REAIS_EIXO = '"R$" #,##0'  # sem centavos, para os eixos dos gráficos
 FORMATO_INTEIRO = "#,##0"
 FORMATO_PERCENTUAL = "0.0%"
+# Variação com sinal sempre visível: +8,3% / -2,1% / 0,0%.
+FORMATO_VARIACAO = "+0.0%;-0.0%;0.0%"
+SEM_COMPARACAO = "sem comparação"
 FORMATO_DATA = "dd/mm/yyyy"
 
 # Formato de cada coluna, pelo nome que aparece no cabeçalho.
@@ -66,12 +81,6 @@ NOMES_COLUNAS_BASE = {
     "quantidade": "Quantidade",
     "preco_unitario": "Preço unitário",
     "faturamento": "Faturamento",
-}
-
-# Meses em português definidos aqui, para não depender do idioma do computador.
-MESES_ABREVIADOS = {
-    1: "jan", 2: "fev", 3: "mar", 4: "abr", 5: "mai", 6: "jun",
-    7: "jul", 8: "ago", 9: "set", 10: "out", 11: "nov", 12: "dez",
 }
 
 # Visual: cabeçalho azul-escuro com texto branco; títulos em azul.
@@ -102,17 +111,22 @@ def configurar_log():
     )
 
 
-def carregar_base(caminho=ARQUIVO_BASE):
-    """Lê a base limpa. Se ela não existir, explica o que fazer e encerra."""
+def ler_csv_base(caminho):
+    """Lê um CSV de base limpa, com a coluna "data" já como data."""
+    return pd.read_csv(caminho, parse_dates=["data"], encoding="utf-8-sig")
+
+
+def carregar_base(mes=None):
+    """Lê a base limpa do ano ou do mês. Se ela não existir, explica o que fazer e encerra."""
+    caminho = arquivo_base(mes)
     if not caminho.exists():
         log.error(
-            "Base limpa não encontrada em %s. "
-            "Rode primeiro: .venv/bin/python src/limpeza.py",
-            caminho.relative_to(PASTA_PROJETO),
+            "Base limpa não encontrada em %s. Rode primeiro: .venv/bin/python src/limpeza.py%s",
+            caminho.relative_to(PASTA_PROJETO), complemento_comando(mes),
         )
         sys.exit(1)  # código 1 = terminou com erro
 
-    df = pd.read_csv(caminho, parse_dates=["data"], encoding="utf-8-sig")
+    df = ler_csv_base(caminho)
     log.info("Base limpa lida: %d vendas", len(df))
     return df
 
@@ -121,9 +135,56 @@ def carregar_base(caminho=ARQUIVO_BASE):
 # Cálculos (somente pandas)
 # ---------------------------------------------------------------------------
 
-def nome_do_mes(periodo):
-    """Converte um período mensal do pandas em texto, ex.: 2026-03 -> "mar/2026"."""
-    return f"{MESES_ABREVIADOS[periodo.month]}/{periodo.year}"
+def descrever_periodo(kpis, mes=None):
+    """Texto do período, ex.: "01/10/2026 a 31/10/2026".
+
+    No modo mensal usa o mês inteiro; no anual, da primeira à última venda.
+    """
+    if mes is None:
+        inicio, fim = kpis["data_inicial"], kpis["data_final"]
+    else:
+        inicio, fim = mes.start_time, mes.end_time
+    return f"{inicio:%d/%m/%Y} a {fim:%d/%m/%Y}"
+
+
+def calcular_variacao(atual, anterior):
+    """Variação percentual entre dois valores, como fração (0.083 = +8,3%).
+
+    Devolve None se o valor anterior for zero (não dá para dividir por zero).
+    """
+    if not anterior:
+        return None
+    return (atual - anterior) / anterior
+
+
+def comparar_com_mes_anterior(faturamento_atual, mes):
+    """Compara o faturamento do mês com o do mês anterior.
+
+    Só compara se a base limpa do mês anterior já existir (ela não é gerada
+    automaticamente: num sistema real, inventar dados não é uma opção).
+
+    Returns:
+        Dicionário com "mes_anterior", "faturamento_anterior" e "variacao";
+        os dois últimos ficam None quando não há dados para comparar.
+    """
+    anterior = mes_anterior(mes)
+    caminho = arquivo_base(anterior)
+    if not caminho.exists():
+        log.warning(
+            "Comparação: base de %s não encontrada (%s); relatório fica sem comparação",
+            nome_do_mes(anterior), caminho.relative_to(PASTA_PROJETO),
+        )
+        return {"mes_anterior": anterior, "faturamento_anterior": None, "variacao": None}
+
+    faturamento_anterior = round(ler_csv_base(caminho)["faturamento"].sum(), 2)
+    variacao = calcular_variacao(faturamento_atual, faturamento_anterior)
+    if variacao is not None:
+        log.info("Comparação: faturamento %+.1f%% vs. %s", variacao * 100, nome_do_mes(anterior))
+    return {
+        "mes_anterior": anterior,
+        "faturamento_anterior": faturamento_anterior,
+        "variacao": variacao,
+    }
 
 
 def calcular_kpis(df):
@@ -165,21 +226,53 @@ def faturamento_por_filial(df):
     })
 
 
-def evolucao_mensal(df, ordem_filiais):
-    """Faturamento mês a mês: meses nas linhas, filiais nas colunas, mais o total."""
+def tabela_evolucao(df, agrupamento, ordem_filiais):
+    """Faturamento por período (linhas) e filial (colunas), mais a coluna Total.
+
+    Args:
+        df: base limpa.
+        agrupamento: Series com o período de cada venda (mês ou semana).
+        ordem_filiais: ordem das colunas (a mesma do ranking de filiais).
+    """
     tabela = df.pivot_table(
-        index=df["data"].dt.to_period("M"),
+        index=agrupamento,
         columns="filial",
         values="faturamento",
         aggfunc="sum",
         fill_value=0,
     )
-    tabela = tabela[ordem_filiais]  # mesma ordem do ranking de filiais
+    tabela = tabela[ordem_filiais]
     tabela["Total"] = tabela.sum(axis=1)
-    tabela = tabela.round(2)
-    tabela.index = [nome_do_mes(periodo) for periodo in tabela.index]
     tabela.columns.name = None
+    return tabela.round(2)
+
+
+def evolucao_mensal(df, ordem_filiais):
+    """Faturamento mês a mês: meses nas linhas, filiais nas colunas, mais o total."""
+    tabela = tabela_evolucao(df, df["data"].dt.to_period("M"), ordem_filiais)
+    tabela.index = [nome_do_mes(periodo) for periodo in tabela.index]
     return tabela.rename_axis("Mês").reset_index()
+
+
+def rotulo_semana(numero_semana, mes):
+    """Rótulo de uma semana do mês, ex.: semana 0 de out/2026 -> "01–07/out"."""
+    inicio = numero_semana * 7 + 1
+    fim = min(inicio + 6, mes.days_in_month)
+    return f"{inicio:02d}–{fim:02d}/{MESES_ABREVIADOS[mes.month]}"
+
+
+def evolucao_semanal(df, ordem_filiais, mes):
+    """Faturamento semana a semana dentro do mês (dias 1–7, 8–14, 15–21, 22–28, 29–fim).
+
+    Usada no modo mensal, em que a evolução mês a mês teria um ponto só.
+    """
+    semanas = (df["data"].dt.day - 1) // 7  # dia 1 a 7 -> 0, dia 8 a 14 -> 1...
+    tabela = tabela_evolucao(df, semanas, ordem_filiais)
+    # Garante todas as semanas do mês, mesmo uma semana sem nenhuma venda.
+    numero_semanas = (mes.days_in_month + 6) // 7
+    tabela = tabela.reindex(range(numero_semanas), fill_value=0)
+    tabela.index = [rotulo_semana(semana, mes) for semana in tabela.index]
+    return tabela.rename_axis("Semana").reset_index()
 
 
 def top_produtos(df, coluna, n=10):
@@ -352,10 +445,10 @@ def grafico_barras_filiais(aba, ultima_linha, coluna_filial, coluna_faturamento)
     return grafico
 
 
-def grafico_linha_mensal(aba, ultima_linha, coluna_mes, primeira_filial, ultima_filial):
-    """Cria um gráfico de linhas com a evolução mensal, uma linha por filial."""
+def grafico_linha_evolucao(aba, ultima_linha, coluna_periodo, primeira_filial, ultima_filial, titulo):
+    """Cria um gráfico de linhas com a evolução por período (mês ou semana), uma linha por filial."""
     grafico = LineChart()
-    grafico.title = "Evolução mensal do faturamento por filial"
+    grafico.title = titulo
     grafico.y_axis.number_format = FORMATO_REAIS_EIXO
     grafico.width, grafico.height = 24, 9
 
@@ -363,24 +456,24 @@ def grafico_linha_mensal(aba, ultima_linha, coluna_mes, primeira_filial, ultima_
         aba, min_col=primeira_filial, max_col=ultima_filial,
         min_row=LINHA_CABECALHO, max_row=ultima_linha,
     )
-    meses = Reference(aba, min_col=coluna_mes, min_row=LINHA_CABECALHO + 1, max_row=ultima_linha)
+    periodos = Reference(aba, min_col=coluna_periodo, min_row=LINHA_CABECALHO + 1, max_row=ultima_linha)
     grafico.add_data(dados, titles_from_data=True)  # nome de cada filial vira o nome da linha
-    grafico.set_categories(meses)
+    grafico.set_categories(periodos)
     mostrar_eixos(grafico)
 
-    # Os meses são texto ("jan/2026"), então o eixo precisa de uma referência de
-    # texto (StrRef); o set_categories cria uma referência numérica por padrão,
-    # e o Excel poderia mostrar 1, 2, 3... no lugar dos nomes.
-    referencia_meses = StrRef(f=str(meses))
+    # Os períodos são texto ("jan/2026", "01–07/out"), então o eixo precisa de uma
+    # referência de texto (StrRef); o set_categories cria uma referência numérica
+    # por padrão, e o Excel poderia mostrar 1, 2, 3... no lugar dos nomes.
+    referencia_periodos = StrRef(f=str(periodos))
 
-    # Cada filial é uma "série": linhas retas, com uma bolinha em cada mês.
+    # Cada filial é uma "série": linhas retas, com uma bolinha em cada período.
     for serie in grafico.series:
-        serie.cat = AxDataSource(strRef=referencia_meses)
+        serie.cat = AxDataSource(strRef=referencia_periodos)
         serie.smooth = False
         serie.marker.symbol = "circle"
         serie.marker.size = 6
 
-    # Meses sempre na base do gráfico, mesmo que algum valor fique perto de zero.
+    # Períodos sempre na base do gráfico, mesmo que algum valor fique perto de zero.
     grafico.x_axis.tickLblPos = "low"
 
     # Legenda embaixo, num espaço próprio (overlay=False: não fica por cima das linhas).
@@ -398,10 +491,25 @@ def grafico_linha_mensal(aba, ultima_linha, coluna_mes, primeira_filial, ultima_
 # Abas
 # ---------------------------------------------------------------------------
 
-def criar_aba_resumo(planilha, kpis):
-    """Aba "Resumo": tabela de indicadores com o formato certo para cada valor."""
+def linhas_comparacao(comparacao):
+    """Linhas do Resumo com a comparação com o mês anterior (indicador, valor, formato)."""
+    nome_anterior = nome_do_mes(comparacao["mes_anterior"])
+    if comparacao["variacao"] is None:
+        return [(f"Variação vs. {nome_anterior}", SEM_COMPARACAO, None)]
+    return [
+        (f"Faturamento de {nome_anterior}", comparacao["faturamento_anterior"], FORMATO_REAIS),
+        (f"Variação vs. {nome_anterior}", comparacao["variacao"], FORMATO_VARIACAO),
+    ]
+
+
+def criar_aba_resumo(planilha, kpis, mes=None, comparacao=None):
+    """Aba "Resumo": tabela de indicadores com o formato certo para cada valor.
+
+    No modo mensal (mes informado), o título traz o mês e a tabela ganha
+    a comparação com o mês anterior.
+    """
     aba = planilha.create_sheet("Resumo")
-    periodo = f"{kpis['data_inicial']:%d/%m/%Y} a {kpis['data_final']:%d/%m/%Y}"
+    periodo = descrever_periodo(kpis, mes)
 
     # (indicador, valor, formato de exibição)
     linhas = [
@@ -414,8 +522,12 @@ def criar_aba_resumo(planilha, kpis):
         ("Unidades vendidas desse produto", kpis["unidades_produto_mais_vendido"], FORMATO_INTEIRO),
         ("Período analisado", periodo, None),
     ]
+    if comparacao is not None:
+        # Logo abaixo do faturamento total, que é o número comparado.
+        linhas[1:1] = linhas_comparacao(comparacao)
 
-    escrever_titulo(aba, "Relatório de Vendas 2026 — Resumo")
+    rotulo = "2026" if mes is None else nome_do_mes(mes)
+    escrever_titulo(aba, f"Relatório de Vendas {rotulo} — Resumo")
     aba.cell(row=LINHA_CABECALHO, column=1, value="Indicador")
     aba.cell(row=LINHA_CABECALHO, column=2, value="Valor")
     formatar_cabecalho(aba, LINHA_CABECALHO, 1, 2)
@@ -430,18 +542,26 @@ def criar_aba_resumo(planilha, kpis):
     finalizar_aba(aba)
 
 
-def criar_aba_filiais(planilha, por_filial, mensal):
-    """Aba "Por filial": ranking das filiais, evolução mensal e os dois gráficos."""
+def criar_aba_filiais(planilha, por_filial, evolucao, nome_evolucao):
+    """Aba "Por filial": ranking das filiais, evolução no tempo e os dois gráficos.
+
+    Args:
+        planilha: arquivo Excel (Workbook) em construção.
+        por_filial: tabela de faturamento_por_filial.
+        evolucao: tabela de evolucao_mensal ou evolucao_semanal (1ª coluna = período).
+        nome_evolucao: "mensal" ou "semanal", usado nos títulos.
+    """
     aba = planilha.create_sheet("Por filial")
 
     # Tabela 1 nas colunas A-D; tabela 2 a partir da F (a coluna E fica de espaço).
     ultima_linha_filiais = escrever_tabela(aba, por_filial, "Faturamento por filial", coluna_inicial=1)
 
-    coluna_mes = len(por_filial.columns) + 2
-    formatos_mensal = {nome: FORMATO_REAIS for nome in mensal.columns if nome != "Mês"}
-    ultima_linha_mensal = escrever_tabela(
-        aba, mensal, "Evolução mensal do faturamento",
-        coluna_inicial=coluna_mes, formatos=formatos_mensal,
+    coluna_periodo = len(por_filial.columns) + 2
+    coluna_nome_periodo = evolucao.columns[0]  # "Mês" ou "Semana"
+    formatos_evolucao = {nome: FORMATO_REAIS for nome in evolucao.columns if nome != coluna_nome_periodo}
+    ultima_linha_evolucao = escrever_tabela(
+        aba, evolucao, f"Evolução {nome_evolucao} do faturamento",
+        coluna_inicial=coluna_periodo, formatos=formatos_evolucao,
     )
 
     # Gráficos abaixo das tabelas. A coluna "Total" fica fora do gráfico de
@@ -451,13 +571,14 @@ def criar_aba_filiais(planilha, por_filial, mensal):
         coluna_filial=1,
         coluna_faturamento=por_filial.columns.get_loc("Faturamento") + 1,
     )
-    linhas = grafico_linha_mensal(
-        aba, ultima_linha_mensal,
-        coluna_mes=coluna_mes,
-        primeira_filial=coluna_mes + 1,
-        ultima_filial=coluna_mes + len(mensal.columns) - 2,  # sem "Mês" e "Total"
+    linhas = grafico_linha_evolucao(
+        aba, ultima_linha_evolucao,
+        coluna_periodo=coluna_periodo,
+        primeira_filial=coluna_periodo + 1,
+        ultima_filial=coluna_periodo + len(evolucao.columns) - 2,  # sem o período e o "Total"
+        titulo=f"Evolução {nome_evolucao} do faturamento por filial",
     )
-    linha_graficos = ultima_linha_mensal + 3
+    linha_graficos = ultima_linha_evolucao + 3
     aba.add_chart(barras, f"A{linha_graficos}")
     aba.add_chart(linhas, f"A{linha_graficos + 18}")
 
@@ -491,14 +612,30 @@ def criar_aba_base(planilha, df):
 # Programa principal
 # ---------------------------------------------------------------------------
 
-def gerar_relatorio(df, caminho=ARQUIVO_RELATORIO):
-    """Monta as quatro abas e salva o arquivo Excel."""
+def gerar_relatorio(df, caminho, mes=None):
+    """Monta as quatro abas e salva o arquivo Excel.
+
+    Args:
+        df: base limpa.
+        caminho: arquivo .xlsx de saída.
+        mes: período mensal (modo mensal) ou None (ano inteiro).
+    """
     planilha = Workbook()
     planilha.remove(planilha.active)  # remove a aba vazia que vem por padrão
 
+    kpis = calcular_kpis(df)
     por_filial = faturamento_por_filial(df)
-    criar_aba_resumo(planilha, calcular_kpis(df))
-    criar_aba_filiais(planilha, por_filial, evolucao_mensal(df, por_filial["Filial"].tolist()))
+    ordem_filiais = por_filial["Filial"].tolist()
+
+    if mes is None:
+        comparacao = None
+        evolucao, nome_evolucao = evolucao_mensal(df, ordem_filiais), "mensal"
+    else:
+        comparacao = comparar_com_mes_anterior(kpis["faturamento_total"], mes)
+        evolucao, nome_evolucao = evolucao_semanal(df, ordem_filiais, mes), "semanal"
+
+    criar_aba_resumo(planilha, kpis, mes, comparacao)
+    criar_aba_filiais(planilha, por_filial, evolucao, nome_evolucao)
     criar_aba_produtos(planilha, top_produtos(df, "faturamento"), top_produtos(df, "quantidade"))
     criar_aba_base(planilha, df)
     log.info("Abas criadas: %s", ", ".join(planilha.sheetnames))
@@ -508,11 +645,19 @@ def gerar_relatorio(df, caminho=ARQUIVO_RELATORIO):
     log.info("Relatório salvo em %s", caminho.relative_to(PASTA_PROJETO))
 
 
+def executar(mes=None):
+    """Lê a base limpa (do ano ou do mês) e gera o relatório em Excel."""
+    df = carregar_base(mes)
+    gerar_relatorio(df, arquivo_relatorio(mes), mes)
+
+
 def main():
-    """Lê a base limpa e gera o relatório em Excel."""
+    """Lê a opção --mes e gera o relatório."""
+    parser = argparse.ArgumentParser(description="Gera o relatório de vendas em Excel.")
+    adicionar_argumento_mes(parser)
+    argumentos = parser.parse_args()
     configurar_log()
-    df = carregar_base()
-    gerar_relatorio(df)
+    executar(argumentos.mes)
 
 
 if __name__ == "__main__":

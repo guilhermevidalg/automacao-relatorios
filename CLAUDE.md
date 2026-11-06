@@ -22,6 +22,13 @@ As dependências estão no ambiente virtual `.venv/` (o `python3` do sistema nã
 tem pandas). Use `.venv/bin/python` ou ative antes com `source .venv/bin/activate`.
 
 ```bash
+# Pipeline mensal (Fase 5A): tudo com um comando só
+.venv/bin/python main.py                          # mês anterior ao atual, envia o e-mail
+.venv/bin/python main.py --mes 2026-10 --dry-run  # e-mail só em prévia
+.venv/bin/python main.py --mes 2026-10 --sem-email  # para no relatório
+.venv/bin/python -m pytest -v                     # testes
+
+# Cada etapa sozinha (sem --mes = ano de 2026 inteiro; com --mes AAAA-MM = um mês)
 .venv/bin/python src/gerar_dados.py   # Fase 1: gera as planilhas sujas em data/raw/
 .venv/bin/python src/limpeza.py       # Fase 2: lê, limpa e salva a base consolidada
 .venv/bin/python src/relatorio.py     # Fase 3: gera output/relatorio_vendas_2026.xlsx
@@ -45,6 +52,9 @@ tem pandas). Use `.venv/bin/python` ou ative antes com `source .venv/bin/activat
   Por produto e Base consolidada
 - **Fase 4 (concluída)** — `src/email_sender.py`: envia o
   relatório como anexo pelo Gmail, com resumo de KPIs em HTML; `--dry-run` só mostra
+- **Fase 5A (concluída)** — pipeline mensal: `main.py` roda gerar dados → limpeza →
+  relatório → e-mail para um mês (`--mes`, `--dry-run`, `--sem-email`), com
+  comparação com o mês anterior, `logs/pipeline.log` e testes em `tests/`
 
 Colunas da base limpa: `data, filial, produto, categoria, vendedor, quantidade,
 preco_unitario, faturamento`.
@@ -111,3 +121,37 @@ preco_unitario, faturamento`.
   `output/previa_email.html`
 - **Erros**: cada caso (sem `.env`, variável vazia, relatório ausente, login
   recusado, destinatário recusado, sem conexão) tem mensagem própria e `sys.exit(1)`
+
+## Decisões da Fase 5A (pipeline mensal)
+- **Dois modos**: sem `--mes` cada script faz exatamente o que fazia antes (ano de
+  2026, `data/raw/`, `vendas_consolidadas.csv`, `relatorio_vendas_2026.xlsx`,
+  1.534 → 1.414 linhas). Com `--mes AAAA-MM`: `data/raw/AAAA-MM/`,
+  `data/processed/vendas_AAAA-MM.csv`, `output/relatorio_vendas_AAAA-MM.xlsx`
+- **`src/periodo.py`**: tudo de mês (validar `AAAA-MM`, mês anterior, nomes em
+  português) e todos os caminhos de arquivo (`pasta_raw`, `arquivo_base`,
+  `arquivo_relatorio`, com `mes=None` = modo anual)
+- **Cada script tem `executar(mes=None, ...)`**; o `main()` do script só lê os
+  argumentos e chama `executar`. O `main.py` importa os módulos (não usa
+  subprocessos) e chama `executar` de cada etapa dentro de `try/except` que pega
+  `Exception` e `SystemExit`; falha → mensagem com a etapa e `sys.exit(1)`
+- **Padrão de `--mes` no `main.py`**: o mês anterior ao atual. `--dry-run` e
+  `--sem-email` são mutuamente exclusivos (argparse)
+- **Dados mensais**: 100 vendas por filial; semente `[ano, mês, índice da filial]`
+  (lista, para meses e filiais nunca colidirem); modo anual mantém `SEED + índice`
+- **Limpeza mensal**: etapa extra `remover_fora_do_mes` (vendas de outro mês são
+  removidas e registradas no log)
+- **Comparação com o mês anterior** (escolha do autor): só se
+  `data/processed/vendas_<mês anterior>.csv` existir; senão "sem comparação" +
+  aviso no log. Nada é gerado automaticamente (num sistema real não há gerador).
+  Variação = (atual − anterior) ÷ anterior; formato Excel `+0.0%;-0.0%;0.0%`; no
+  e-mail `+8,3%`. Resumo e e-mail usam a mesma função `comparar_com_mes_anterior`
+- **Relatório mensal**: título com o mês (`out/2026`), período = mês inteiro, e a
+  aba Por filial mostra evolução **semanal** (blocos 01–07, 08–14, 15–21, 22–28,
+  29–fim), pois a mensal teria um ponto só
+- **Logs**: `logs/pipeline.log` em modo append, só com as mensagens do logger
+  `"pipeline"` (início, fim e duração de cada etapa, falhas com traceback).
+  `logs/limpeza.log` continua: o `FileHandler` é ligado dentro de
+  `limpeza.executar()` e desligado no fim (`basicConfig` só funciona uma vez por processo)
+- **Testes**: pytest, `pytest.ini` com `pythonpath = src`. `tests/test_limpeza.py`,
+  `tests/test_leitura.py` (inclui: todo nome de coluna do gerador é reconhecido
+  pelo leitor) e `tests/test_periodo.py`

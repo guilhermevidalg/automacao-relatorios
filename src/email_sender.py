@@ -1,15 +1,18 @@
 """Envio do relatório de vendas por e-mail, pelo Gmail.
 
-Anexa output/relatorio_vendas_2026.xlsx (gerado por src/relatorio.py) e escreve
-no corpo do e-mail, em HTML, um resumo dos principais indicadores (KPIs).
+Anexa o relatório em Excel (gerado por src/relatorio.py) e escreve no corpo do
+e-mail, em HTML, um resumo dos principais indicadores (KPIs). No modo mensal
+(--mes), o assunto e o texto citam o mês e o resumo traz a variação do
+faturamento em relação ao mês anterior.
 
 As credenciais ficam no arquivo .env (nunca no código). Para criá-lo:
     cp .env.example .env
 e preencha os valores. O Gmail exige uma "senha de app", não a senha normal.
 
 Uso:
-    .venv/bin/python src/email_sender.py            # envia o e-mail
-    .venv/bin/python src/email_sender.py --dry-run  # só mostra o que seria enviado
+    .venv/bin/python src/email_sender.py                          # envia (ano inteiro)
+    .venv/bin/python src/email_sender.py --dry-run                # só mostra o que seria enviado
+    .venv/bin/python src/email_sender.py --mes 2026-10 --dry-run  # relatório de outubro
 """
 
 import argparse
@@ -22,15 +25,25 @@ from email.message import EmailMessage
 
 from dotenv import load_dotenv
 
-# Reaproveita o relatório: mesmos caminhos, mesma cor e o mesmo cálculo de KPIs,
+from periodo import (
+    PASTA_PROJETO,
+    adicionar_argumento_mes,
+    arquivo_relatorio,
+    complemento_comando,
+    mes_por_extenso,
+    nome_do_mes,
+)
+
+# Reaproveita o relatório: mesma cor e os mesmos cálculos (KPIs e comparação),
 # para o e-mail mostrar exatamente os números da aba Resumo.
 from relatorio import (
-    ARQUIVO_RELATORIO,
     COR_PRINCIPAL,
-    PASTA_PROJETO,
+    SEM_COMPARACAO,
     calcular_kpis,
     carregar_base,
+    comparar_com_mes_anterior,
     configurar_log,
+    descrever_periodo,
 )
 
 log = logging.getLogger(__name__)
@@ -100,12 +113,12 @@ def ler_configuracao(arquivo_env, exigir_senha=True):
     }
 
 
-def verificar_relatorio(caminho):
+def verificar_relatorio(caminho, mes=None):
     """Confere se o relatório em Excel existe; se não existir, explica o que fazer e encerra."""
     if not caminho.exists():
         encerrar_com_erro(
-            "Relatório não encontrado em %s. Rode primeiro: .venv/bin/python src/relatorio.py",
-            caminho.relative_to(PASTA_PROJETO),
+            "Relatório não encontrado em %s. Rode primeiro: .venv/bin/python src/relatorio.py%s",
+            caminho.relative_to(PASTA_PROJETO), complemento_comando(mes),
         )
 
 
@@ -125,39 +138,54 @@ def formatar_inteiro(numero):
     return f"{numero:,}".replace(",", ".")
 
 
-def descrever_periodo(kpis):
-    """Texto do período analisado, ex.: "01/01/2026 a 30/06/2026"."""
-    return f"{kpis['data_inicial']:%d/%m/%Y} a {kpis['data_final']:%d/%m/%Y}"
+def formatar_variacao(variacao):
+    """Formata uma variação com sinal e vírgula decimal: 0.0834 -> "+8,3%"."""
+    return f"{variacao * 100:+.1f}%".replace(".", ",")
 
 
-def linhas_resumo(kpis):
+def linhas_resumo(kpis, comparacao=None):
     """Lista de (indicador, valor já formatado) usada nas versões texto e HTML."""
-    return [
+    linhas = [
         ("Faturamento total", formatar_reais(kpis["faturamento_total"])),
         ("Nº de vendas", formatar_inteiro(kpis["numero_vendas"])),
         ("Ticket médio", formatar_reais(kpis["ticket_medio"])),
         ("Melhor filial", f"{kpis['melhor_filial']} ({formatar_reais(kpis['faturamento_melhor_filial'])})"),
     ]
+    if comparacao is not None:
+        variacao = comparacao["variacao"]
+        texto = SEM_COMPARACAO if variacao is None else formatar_variacao(variacao)
+        # Logo abaixo do faturamento total, que é o número comparado.
+        linhas.insert(1, (f"Variação vs. {nome_do_mes(comparacao['mes_anterior'])}", texto))
+    return linhas
 
 
-def montar_assunto(kpis):
-    """Assunto do e-mail, com o período analisado."""
-    return f"Relatório de Vendas 2026 — {descrever_periodo(kpis)}"
+def descrever_relatorio(kpis, mes=None):
+    """Trecho da frase de abertura, ex.: "de outubro de 2026" ou "do período de 01/01/2026 a ..."."""
+    if mes is None:
+        return f"do período de {descrever_periodo(kpis)}"
+    return f"de {mes_por_extenso(mes)}"
 
 
-def montar_corpo_texto(kpis):
+def montar_assunto(kpis, mes=None):
+    """Assunto do e-mail, com o mês (modo mensal) ou o período analisado (modo anual)."""
+    if mes is None:
+        return f"Relatório de Vendas 2026 — {descrever_periodo(kpis)}"
+    return f"Relatório de Vendas — {nome_do_mes(mes)}"
+
+
+def montar_corpo_texto(kpis, mes=None, comparacao=None):
     """Versão em texto simples do corpo, para programas de e-mail sem HTML."""
-    linhas = [f"  - {indicador}: {valor}" for indicador, valor in linhas_resumo(kpis)]
+    linhas = [f"  - {indicador}: {valor}" for indicador, valor in linhas_resumo(kpis, comparacao)]
     return (
         "Olá,\n\n"
-        f"Segue em anexo o relatório de vendas do período de {descrever_periodo(kpis)}.\n\n"
+        f"Segue em anexo o relatório de vendas {descrever_relatorio(kpis, mes)}.\n\n"
         "Resumo:\n" + "\n".join(linhas) + "\n\n"
         "Os detalhes por filial e por produto estão nas abas da planilha anexa.\n\n"
         "E-mail gerado automaticamente. Não é necessário responder.\n"
     )
 
 
-def montar_corpo_html(kpis):
+def montar_corpo_html(kpis, mes=None, comparacao=None):
     """Versão em HTML do corpo, com a tabela de KPIs.
 
     Os estilos ficam dentro de cada tag (style="..."), porque muitos programas
@@ -168,15 +196,16 @@ def montar_corpo_html(kpis):
     linhas_tabela = "\n".join(
         f'<tr><td style="{estilo_celula} font-weight: bold;">{html.escape(indicador)}</td>'
         f'<td style="{estilo_celula}">{html.escape(valor)}</td></tr>'
-        for indicador, valor in linhas_resumo(kpis)
+        for indicador, valor in linhas_resumo(kpis, comparacao)
     )
+    titulo = "Relatório de Vendas 2026" if mes is None else f"Relatório de Vendas — {nome_do_mes(mes)}"
     return f"""\
 <html>
   <body style="font-family: Arial, Helvetica, sans-serif; color: #333333;">
-    <h2 style="color: #{COR_PRINCIPAL};">Relatório de Vendas 2026</h2>
+    <h2 style="color: #{COR_PRINCIPAL};">{titulo}</h2>
     <p>Olá,</p>
-    <p>Segue em anexo o relatório de vendas do período de
-       <strong>{descrever_periodo(kpis)}</strong>.</p>
+    <p>Segue em anexo o relatório de vendas
+       <strong>{descrever_relatorio(kpis, mes)}</strong>.</p>
     <table style="border-collapse: collapse;">
       <tr>
         <th style="{estilo_celula} background: #{COR_PRINCIPAL}; color: #ffffff;">Indicador</th>
@@ -193,16 +222,16 @@ def montar_corpo_html(kpis):
 """
 
 
-def montar_email(config, kpis, caminho_relatorio):
+def montar_email(config, kpis, caminho_relatorio, mes=None, comparacao=None):
     """Monta a mensagem completa: cabeçalhos, corpo (texto + HTML) e anexo."""
     mensagem = EmailMessage()
     mensagem["From"] = config["remetente"]
     mensagem["To"] = ", ".join(config["destinatarios"])
-    mensagem["Subject"] = montar_assunto(kpis)
+    mensagem["Subject"] = montar_assunto(kpis, mes)
 
     # Primeiro o texto simples; o HTML entra como "alternativa" preferida.
-    mensagem.set_content(montar_corpo_texto(kpis))
-    mensagem.add_alternative(montar_corpo_html(kpis), subtype="html")
+    mensagem.set_content(montar_corpo_texto(kpis, mes, comparacao))
+    mensagem.add_alternative(montar_corpo_html(kpis, mes, comparacao), subtype="html")
 
     tipo_principal, subtipo = TIPO_ANEXO_XLSX
     mensagem.add_attachment(
@@ -218,10 +247,13 @@ def montar_email(config, kpis, caminho_relatorio):
 # Envio ou prévia
 # ---------------------------------------------------------------------------
 
-def mostrar_previa(mensagem, kpis, caminho_relatorio):
+def mostrar_previa(mensagem, caminho_relatorio):
     """Modo --dry-run: mostra no terminal o que seria enviado e salva o HTML para conferência."""
+    # A mensagem tem duas versões do corpo; pegamos cada uma pelo tipo.
+    corpo_texto = mensagem.get_body(preferencelist=("plain",)).get_content()
+    corpo_html = mensagem.get_body(preferencelist=("html",)).get_content()
     ARQUIVO_PREVIA.parent.mkdir(parents=True, exist_ok=True)
-    ARQUIVO_PREVIA.write_text(montar_corpo_html(kpis), encoding="utf-8")
+    ARQUIVO_PREVIA.write_text(corpo_html, encoding="utf-8")
     tamanho_kb = caminho_relatorio.stat().st_size / 1024
 
     separador = "=" * 70
@@ -233,7 +265,7 @@ def mostrar_previa(mensagem, kpis, caminho_relatorio):
     print(f"Assunto: {mensagem['Subject']}")
     print(f"Anexo:   {caminho_relatorio.name} ({formatar_inteiro(round(tamanho_kb))} KB)")
     print("-" * 70)
-    print(montar_corpo_texto(kpis))
+    print(corpo_texto)
     print(separador)
     print(f"Versão HTML salva em {ARQUIVO_PREVIA.relative_to(PASTA_PROJETO)} "
           "(abra no navegador para ver como fica).")
@@ -274,8 +306,9 @@ def enviar_email(mensagem, config):
 # ---------------------------------------------------------------------------
 
 def ler_argumentos():
-    """Lê as opções da linha de comando (por enquanto, só --dry-run)."""
+    """Lê as opções da linha de comando: --mes e --dry-run."""
     parser = argparse.ArgumentParser(description="Envia o relatório de vendas por e-mail (Gmail).")
+    adicionar_argumento_mes(parser)
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -284,20 +317,32 @@ def ler_argumentos():
     return parser.parse_args()
 
 
-def main():
-    """Verifica a configuração, monta o e-mail e envia (ou só mostra, com --dry-run)."""
-    configurar_log()
-    argumentos = ler_argumentos()
+def executar(mes=None, dry_run=False):
+    """Verifica a configuração, monta o e-mail e envia (ou só mostra, com dry_run=True).
 
-    config = ler_configuracao(ARQUIVO_ENV, exigir_senha=not argumentos.dry_run)
-    verificar_relatorio(ARQUIVO_RELATORIO)
-    kpis = calcular_kpis(carregar_base())
-    mensagem = montar_email(config, kpis, ARQUIVO_RELATORIO)
+    Args:
+        mes: período mensal (ex.: 2026-10) ou None para o relatório anual.
+        dry_run: se True, não envia; só mostra a prévia e salva o HTML.
+    """
+    config = ler_configuracao(ARQUIVO_ENV, exigir_senha=not dry_run)
+    caminho_relatorio = arquivo_relatorio(mes)
+    verificar_relatorio(caminho_relatorio, mes)
 
-    if argumentos.dry_run:
-        mostrar_previa(mensagem, kpis, ARQUIVO_RELATORIO)
+    kpis = calcular_kpis(carregar_base(mes))
+    comparacao = None if mes is None else comparar_com_mes_anterior(kpis["faturamento_total"], mes)
+    mensagem = montar_email(config, kpis, caminho_relatorio, mes, comparacao)
+
+    if dry_run:
+        mostrar_previa(mensagem, caminho_relatorio)
     else:
         enviar_email(mensagem, config)
+
+
+def main():
+    """Lê as opções da linha de comando e executa o envio."""
+    argumentos = ler_argumentos()
+    configurar_log()
+    executar(argumentos.mes, argumentos.dry_run)
 
 
 if __name__ == "__main__":
