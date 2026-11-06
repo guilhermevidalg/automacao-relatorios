@@ -55,6 +55,12 @@ tem pandas). Use `.venv/bin/python` ou ative antes com `source .venv/bin/activat
 - **Fase 5A (concluída)** — pipeline mensal: `main.py` roda gerar dados → limpeza →
   relatório → e-mail para um mês (`--mes`, `--dry-run`, `--sem-email`), com
   comparação com o mês anterior, `logs/pipeline.log` e testes em `tests/`
+- **Fase 5B (concluída)** — `README.md` para o GitHub (público: recrutadores de
+  estágio em dados): problema, diagrama Mermaid do pipeline, imagens de
+  `docs/img/` (`antes_planilha_suja.png`, `graficos.png`, `email_recebido.png`),
+  tabela antes vs. depois com números dos logs, como rodar, estrutura de pastas,
+  decisões técnicas, testes e próximos passos. Se mudar comandos, números da
+  limpeza ou a quantidade de testes, atualizar o README também
 
 Colunas da base limpa: `data, filial, produto, categoria, vendedor, quantidade,
 preco_unitario, faturamento`.
