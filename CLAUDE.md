@@ -43,7 +43,7 @@ tem pandas). Use `.venv/bin/python` ou ative antes com `source .venv/bin/activat
 - **Fase 3 (concluída)** — `src/relatorio.py`: lê a base limpa e gera
   `output/relatorio_vendas_2026.xlsx` com as abas Resumo, Por filial,
   Por produto e Base consolidada
-- **Fase 4 (implementada, falta o 1º envio real)** — `src/email_sender.py`: envia o
+- **Fase 4 (concluída)** — `src/email_sender.py`: envia o
   relatório como anexo pelo Gmail, com resumo de KPIs em HTML; `--dry-run` só mostra
 
 Colunas da base limpa: `data, filial, produto, categoria, vendedor, quantidade,
