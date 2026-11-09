@@ -23,8 +23,8 @@ sua planilha de vendas, e cada uma vem de um jeito:
 - linhas vazias, linhas duplicadas, produtos escritos de formas diferentes (`mouse sem fio` / `Mouse sem fio`)
 - campos faltando (data, preço, vendedor)
 
-Juntar isso à mão, corrigir, calcular os indicadores e montar o e-mail para a
-gestão é um trabalho repetitivo, lento e fácil de errar.
+Juntar isso à mão, corrigir, calcular os indicadores e montar o e-mail para o
+gestor é um trabalho repetitivo, lento e fácil de errar.
 
 ## A solução
 
@@ -60,13 +60,13 @@ dentro do próprio Excel.
 
 ![Gráficos do relatório em Excel](docs/img/graficos.png)
 
-**A entrega:** o e-mail que a gestão recebe (imagem no topo desta página), com
+**A entrega:** o e-mail que o gestor recebe (imagem no topo desta página), com
 faturamento, variação em relação ao mês anterior, número de vendas, ticket médio
 e melhor filial.
 
 ## Antes vs. depois em números
 
-Números tirados do `logs/limpeza.log` de execuções reais:
+Números tirados do `logs/limpeza.log` de execuções do pipeline:
 
 | O que foi tratado | Ano de 2026 (modo anual) | Outubro/2026 (modo mensal) |
 |---|---:|---:|
@@ -84,7 +84,7 @@ Números tirados do `logs/limpeza.log` de execuções reais:
 
 ## Como rodar
 
-Requisitos: Python 3.9 ou mais recente.
+Requisitos: Python 3.9 ou mais recente (testado com Python 3.9 e 3.12).
 
 ```bash
 # 1. Clonar e entrar na pasta
@@ -140,12 +140,6 @@ python src/gerar_dados.py
 python src/limpeza.py
 python src/relatorio.py
 python src/email_sender.py --dry-run
-```
-
-### Testes
-
-```bash
-python -m pytest -v
 ```
 
 ## Agendamento automático (GitHub Actions)
@@ -241,8 +235,9 @@ automacao-relatorios/
 
 ## Testes
 
-São 118 testes com `pytest` (rodados também a cada execução do GitHub Actions), focados nas regras de limpeza, onde um erro passaria
-despercebido no relatório:
+São 118 testes com `pytest`, rodados também a cada execução do GitHub Actions.
+A maioria cobre as regras de limpeza, onde um erro passaria despercebido no
+relatório; os demais cobrem o cálculo de períodos e a configuração do e-mail:
 
 - **Datas**: todos os formatos aceitos, datas inválidas e o caso dia/mês que não pode ser invertido
 - **Preços**: `"R$ 1.234,56"` → `1234.56` e valores inválidos

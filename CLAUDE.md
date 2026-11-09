@@ -9,8 +9,9 @@ avaliar.
 
 ## Regras do projeto
 - Código (nomes de variáveis, funções etc.) e comentários em português
-- Bibliotecas principais: pandas (manipulação de dados), openpyxl (leitura e
-  escrita de Excel) e matplotlib (gráficos)
+- Bibliotecas principais: pandas (manipulação de dados) e openpyxl (leitura e
+  escrita de Excel, inclusive os gráficos nativos). O matplotlib não é usado
+  (foi tirado do `requirements.txt`)
 - Funções pequenas, cada uma com uma responsabilidade, e sempre com docstring
 - Nunca commitar o arquivo `.env`; ele deve estar no `.gitignore`
 - O autor é iniciante: explique as decisões antes de implementar
@@ -169,7 +170,8 @@ preco_unitario, faturamento`.
   `limpeza.executar()` e desligado no fim (`basicConfig` só funciona uma vez por processo)
 - **Testes**: pytest, `pytest.ini` com `pythonpath = src`. `tests/test_limpeza.py`,
   `tests/test_leitura.py` (inclui: todo nome de coluna do gerador é reconhecido
-  pelo leitor) e `tests/test_periodo.py`
+  pelo leitor), `tests/test_periodo.py` e `tests/test_email_sender.py` (Fase 6:
+  prévia sem `.env`, envio real exigindo tudo)
 
 ## Decisões da Fase 6 (GitHub Actions)
 - **Sempre `--dry-run` na nuvem, sem Secrets** (escolha do autor): nenhuma senha ou
