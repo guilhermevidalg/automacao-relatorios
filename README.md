@@ -2,13 +2,11 @@
 
 [![Relatório mensal](https://github.com/guilhermevidalg/automacao-relatorios/actions/workflows/relatorio-mensal.yml/badge.svg)](https://github.com/guilhermevidalg/automacao-relatorios/actions/workflows/relatorio-mensal.yml)
 
-Pipeline em Python que pega as planilhas de vendas bagunçadas de 5 filiais, limpa
-e consolida os dados, gera um relatório em Excel com gráficos e envia tudo por
-e-mail, com um único comando.
-
-```bash
-python main.py --mes 2026-10
-```
+Pipeline em Python que transforma planilhas de vendas bagunçadas de 5 filiais em
+um relatório mensal pronto: limpa e consolida os dados, gera um Excel com KPIs,
+gráficos e comparação com o mês anterior, e monta o e-mail para o gestor. Roda
+automaticamente todo mês via GitHub Actions, e só gera o resultado se os 118
+testes automatizados passarem.
 
 ![E-mail com o resumo de outubro de 2026 e o relatório em anexo](docs/img/email_recebido.png)
 
