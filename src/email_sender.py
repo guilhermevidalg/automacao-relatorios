@@ -8,6 +8,8 @@ faturamento em relação ao mês anterior.
 As credenciais ficam no arquivo .env (nunca no código). Para criá-lo:
     cp .env.example .env
 e preencha os valores. O Gmail exige uma "senha de app", não a senha normal.
+No --dry-run nada é enviado: o .env é opcional e, se faltar remetente ou
+destinatário, a prévia usa endereços de exemplo (@example.com).
 
 Uso:
     .venv/bin/python src/email_sender.py                          # envia (ano inteiro)
@@ -68,6 +70,11 @@ VAR_REMETENTE = "GMAIL_REMETENTE"
 VAR_SENHA = "GMAIL_SENHA_APP"
 VAR_DESTINATARIOS = "EMAIL_DESTINATARIOS"
 
+# Endereços usados só na prévia (--dry-run) quando o .env não existe ou está
+# vazio, como no GitHub Actions, onde nenhuma credencial é cadastrada.
+REMETENTE_EXEMPLO = "remetente@example.com"
+DESTINATARIO_EXEMPLO = "destinatario@example.com"
+
 
 # ---------------------------------------------------------------------------
 # Configuração e verificações
@@ -79,25 +86,52 @@ def encerrar_com_erro(mensagem, *argumentos):
     sys.exit(1)
 
 
+def carregar_env(arquivo_env, envio_real=True):
+    """Coloca os valores do .env nas variáveis de ambiente.
+
+    No envio real o .env é obrigatório. No --dry-run (ex.: no GitHub Actions,
+    onde não há .env) a falta dele só gera um aviso.
+    """
+    if not arquivo_env.exists():
+        if envio_real:
+            encerrar_com_erro(
+                "Arquivo .env não encontrado. Crie-o a partir do modelo com "
+                "'cp .env.example .env' e preencha remetente, senha de app e destinatários."
+            )
+        log.warning("Arquivo .env não encontrado: a prévia usará endereços de exemplo.")
+        return
+
+    # override=True: o .env prevalece sobre variáveis de mesmo nome que já existam no terminal.
+    load_dotenv(arquivo_env, override=True)
+
+
+def preencher_com_exemplos():
+    """No --dry-run, completa remetente e destinatário vazios com endereços de exemplo.
+
+    O domínio example.com é reservado para exemplos: não pertence a ninguém.
+    Os valores servem só para montar a prévia; nada é enviado.
+    """
+    exemplos = {VAR_REMETENTE: REMETENTE_EXEMPLO, VAR_DESTINATARIOS: DESTINATARIO_EXEMPLO}
+    for nome, valor in exemplos.items():
+        if not os.getenv(nome, "").strip():
+            log.warning("%s vazio: usando %s só para montar a prévia.", nome, valor)
+            os.environ[nome] = valor
+
+
 def ler_configuracao(arquivo_env, exigir_senha=True):
     """Lê remetente, senha e destinatários do arquivo .env.
 
     Args:
         arquivo_env: caminho do arquivo .env.
-        exigir_senha: no modo --dry-run é False, pois nada é enviado.
+        exigir_senha: True no envio real. No modo --dry-run é False: nada é
+            enviado, então o .env pode faltar e os e-mails viram exemplos.
 
     Returns:
         Dicionário com "remetente", "senha" e "destinatarios" (lista).
     """
-    if not arquivo_env.exists():
-        encerrar_com_erro(
-            "Arquivo .env não encontrado. Crie-o a partir do modelo com "
-            "'cp .env.example .env' e preencha remetente, senha de app e destinatários."
-        )
-
-    # Coloca os valores do .env nas variáveis de ambiente. override=True: o .env
-    # prevalece sobre variáveis de mesmo nome que já existam no terminal.
-    load_dotenv(arquivo_env, override=True)
+    carregar_env(arquivo_env, envio_real=exigir_senha)
+    if not exigir_senha:
+        preencher_com_exemplos()
 
     obrigatorias = [VAR_REMETENTE, VAR_DESTINATARIOS] + ([VAR_SENHA] if exigir_senha else [])
     faltando = [nome for nome in obrigatorias if not os.getenv(nome, "").strip()]

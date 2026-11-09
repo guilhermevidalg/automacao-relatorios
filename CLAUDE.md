@@ -34,6 +34,9 @@ tem pandas). Use `.venv/bin/python` ou ative antes com `source .venv/bin/activat
 .venv/bin/python src/relatorio.py     # Fase 3: gera output/relatorio_vendas_2026.xlsx
 .venv/bin/python src/email_sender.py --dry-run  # Fase 4: mostra o e-mail sem enviar
 .venv/bin/python src/email_sender.py            # Fase 4: envia o relatório pelo Gmail
+
+# Fase 6: disparar o workflow do GitHub Actions manualmente (mes é opcional)
+gh workflow run relatorio-mensal.yml -f mes=2026-10
 ```
 
 ## Estado atual
@@ -61,6 +64,10 @@ tem pandas). Use `.venv/bin/python` ou ative antes com `source .venv/bin/activat
   tabela antes vs. depois com números dos logs, como rodar, estrutura de pastas,
   decisões técnicas, testes e próximos passos. Se mudar comandos, números da
   limpeza ou a quantidade de testes, atualizar o README também
+- **Fase 6 (concluída)** — `.github/workflows/relatorio-mensal.yml`: GitHub Actions
+  roda o pipeline todo dia 1º (e manualmente), sempre em `--dry-run`, sem Secrets,
+  e salva relatório, prévia do e-mail e logs como artifacts. README com badge e
+  seção "Agendamento automático". 118 testes (novo `tests/test_email_sender.py`)
 
 Colunas da base limpa: `data, filial, produto, categoria, vendedor, quantidade,
 preco_unitario, faturamento`.
@@ -123,8 +130,10 @@ preco_unitario, faturamento`.
 - **Corpo**: texto simples + HTML alternativo (`EmailMessage.add_alternative`),
   estilos inline (programas de e-mail ignoram `<style>`); valores em formato
   brasileiro (`R$ 1.234,56`)
-- **`--dry-run`**: não exige a senha; mostra a prévia no terminal e salva o HTML em
-  `output/previa_email.html`
+- **`--dry-run`**: não exige a senha nem o `.env` (desde a Fase 6); remetente ou
+  destinatário vazios viram `remetente@example.com` / `destinatario@example.com`
+  (`preencher_com_exemplos`, com aviso no log). Mostra a prévia no terminal e salva
+  o HTML em `output/previa_email.html`. O envio real continua exigindo tudo
 - **Erros**: cada caso (sem `.env`, variável vazia, relatório ausente, login
   recusado, destinatário recusado, sem conexão) tem mensagem própria e `sys.exit(1)`
 
@@ -161,3 +170,22 @@ preco_unitario, faturamento`.
 - **Testes**: pytest, `pytest.ini` com `pythonpath = src`. `tests/test_limpeza.py`,
   `tests/test_leitura.py` (inclui: todo nome de coluna do gerador é reconhecido
   pelo leitor) e `tests/test_periodo.py`
+
+## Decisões da Fase 6 (GitHub Actions)
+- **Sempre `--dry-run` na nuvem, sem Secrets** (escolha do autor): nenhuma senha ou
+  e-mail cadastrado no GitHub. O envio real é só local, com o `.env`
+- **Cron em UTC**: `0 11 1 * *` = dia 1º às 8h de Brasília (sem horário de verão).
+  O GitHub pode atrasar alguns minutos e desliga agendamentos de repositórios sem
+  atividade há 60 dias
+- **Gatilho manual** (`workflow_dispatch`) com o campo `mes` opcional (vazio = mês
+  anterior). O valor entra por variável de ambiente (`MES_INFORMADO`), nunca com
+  `${{ }}` direto no `run`, para evitar injeção de comando; o formato é validado
+  no passo. `MES` e `MES_ANTERIOR` vão para `$GITHUB_ENV` (calculados com `date -d`)
+- **Comparação na nuvem** (escolha do autor): a máquina começa vazia, então o
+  workflow roda antes `main.py --mes <anterior> --sem-email` só para criar a base,
+  e depois `main.py --mes <mês> --dry-run`
+- **Passos**: checkout → Python 3.12 com `cache: pip` → `pip install -r
+  requirements.txt` → pytest (falhou, para) → meses → mês anterior → pipeline →
+  `upload-artifact` com `if: always()` (relatório do mês, `previa_email.html`,
+  `logs/`), artifact `relatorio-AAAA-MM`
+- **`permissions: contents: read`**: o workflow só lê o repositório

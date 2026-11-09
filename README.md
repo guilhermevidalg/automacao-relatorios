@@ -1,5 +1,7 @@
 # Automação de Relatórios de Vendas
 
+[![Relatório mensal](https://github.com/guilhermevidalg/automacao-relatorios/actions/workflows/relatorio-mensal.yml/badge.svg)](https://github.com/guilhermevidalg/automacao-relatorios/actions/workflows/relatorio-mensal.yml)
+
 Pipeline em Python que pega as planilhas de vendas bagunçadas de 5 filiais, limpa
 e consolida os dados, gera um relatório em Excel com gráficos e envia tudo por
 e-mail, com um único comando.
@@ -96,7 +98,7 @@ python3 -m venv .venv
 source .venv/bin/activate        # no Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
-# 3. Configurar o e-mail (só necessário para --dry-run e para o envio real)
+# 3. Configurar o e-mail (só necessário para o envio real)
 cp .env.example .env
 ```
 
@@ -115,12 +117,13 @@ O `.env` está no `.gitignore` e nunca vai para o GitHub.
 ```bash
 python main.py                          # mês anterior ao atual, com envio do e-mail
 python main.py --mes 2026-10            # um mês específico (formato AAAA-MM), com envio
-python main.py --mes 2026-10 --dry-run  # tudo, mas o e-mail só em prévia (não envia, não pede a senha)
+python main.py --mes 2026-10 --dry-run  # tudo, mas o e-mail só em prévia (não envia, não precisa de .env)
 python main.py --mes 2026-10 --sem-email  # para no relatório (não precisa de .env)
 python main.py --help                   # lista as opções
 ```
 
-Para ver tudo funcionando sem configurar o Gmail, use `--sem-email`. Os arquivos
+Para ver tudo funcionando sem configurar o Gmail, use `--dry-run` ou `--sem-email`.
+Sem `.env`, a prévia usa endereços de exemplo (`@example.com`). Os arquivos
 gerados ficam em:
 
 - `data/raw/2026-10/`: planilhas sujas das filiais
@@ -147,10 +150,44 @@ python src/email_sender.py --dry-run
 python -m pytest -v
 ```
 
+## Agendamento automático (GitHub Actions)
+
+O workflow [`.github/workflows/relatorio-mensal.yml`](.github/workflows/relatorio-mensal.yml)
+roda o pipeline sozinho, na nuvem do GitHub, **todo dia 1º às 8h de Brasília**
+(11h UTC), para o mês que acabou de fechar. O badge no topo desta página mostra
+se a última execução deu certo.
+
+Cada execução:
+
+1. instala as dependências e roda os testes (se algum falhar, para por aí);
+2. processa o mês anterior, só para ter a base da comparação (a máquina da nuvem
+   começa vazia a cada execução);
+3. roda `main.py --dry-run` para o mês do relatório;
+4. salva como *artifact* o relatório `.xlsx`, a prévia do e-mail (`previa_email.html`)
+   e os logs.
+
+**Onde baixar:** aba **Actions** → **Relatório mensal** → clique na execução → no
+fim da página, em *Artifacts*, baixe `relatorio-AAAA-MM`.
+
+**Rodar manualmente:** aba **Actions** → **Relatório mensal** → **Run workflow**.
+O campo `mes` é opcional: vazio gera o mês anterior; preenchido (ex.: `2026-10`),
+gera aquele mês. Pelo terminal, com o [GitHub CLI](https://cli.github.com/):
+
+```bash
+gh workflow run relatorio-mensal.yml -f mes=2026-10
+```
+
+**Sem credenciais na nuvem:** o workflow roda **sempre em `--dry-run`**, então
+nenhum e-mail é enviado e nenhum *Secret* (senha ou endereço) fica cadastrado no
+GitHub. A prévia usa endereços de exemplo (`remetente@example.com`). O envio real
+é feito localmente, com o `.env`: `python main.py`.
+
 ## Estrutura de pastas
 
 ```
 automacao-relatorios/
+├── .github/workflows/
+│   └── relatorio-mensal.yml  # agendamento mensal no GitHub Actions (sempre --dry-run)
 ├── main.py               # pipeline mensal: roda as 4 etapas em ordem para um mês
 ├── src/
 │   ├── gerar_dados.py    # gera as planilhas fictícias e sujas de cada filial
@@ -160,6 +197,7 @@ automacao-relatorios/
 │   ├── email_sender.py   # monta o e-mail em HTML e envia pelo Gmail
 │   └── periodo.py        # funções de mês (validar, mês anterior, nomes) e caminhos dos arquivos
 ├── tests/
+│   ├── test_email_sender.py  # configuração do e-mail: prévia sem .env e envio real exigindo tudo
 │   ├── test_leitura.py   # cabeçalho, nomes de colunas e nome da filial
 │   ├── test_limpeza.py   # datas, preços, textos, faltantes, duplicatas e filtro do mês
 │   └── test_periodo.py   # validação de mês, mês anterior, variação e rótulos das semanas
@@ -199,10 +237,13 @@ automacao-relatorios/
 - **Credenciais fora do código**: remetente, senha de app e destinatários ficam
   no `.env` (lido com `python-dotenv`); no repositório só existe o modelo
   `.env.example`. Cada erro de configuração ou envio tem uma mensagem clara.
+- **Agendamento sem segredos**: na nuvem o pipeline roda sempre em `--dry-run`,
+  sem nenhum *Secret* cadastrado. O mês digitado no gatilho manual é validado e
+  passado por variável de ambiente, nunca colado direto no comando.
 
 ## Testes
 
-São 113 testes com `pytest`, focados nas regras de limpeza, onde um erro passaria
+São 118 testes com `pytest` (rodados também a cada execução do GitHub Actions), focados nas regras de limpeza, onde um erro passaria
 despercebido no relatório:
 
 - **Datas**: todos os formatos aceitos, datas inválidas e o caso dia/mês que não pode ser invertido
@@ -212,6 +253,7 @@ despercebido no relatório:
 - **Duplicatas**: exatas e quase duplicatas
 - **Leitura**: cabeçalho em qualquer linha e todo nome de coluna usado pelas filiais é reconhecido
 - **Período**: validação de `AAAA-MM`, mês anterior na virada do ano, variação percentual e rótulos das semanas
+- **E-mail**: prévia funciona sem `.env` (endereços de exemplo); envio real exige `.env` completo
 
 ```bash
 python -m pytest -v
@@ -226,11 +268,11 @@ python -m pytest -v
 - **python-dotenv**: leitura das credenciais do `.env`
 - **logging** (biblioteca padrão): logs de cada etapa
 - **pytest**: testes automatizados
+- **GitHub Actions**: agendamento mensal na nuvem e download dos resultados
 - **Mermaid**: diagrama do pipeline neste README
 
 ## Próximos passos
 
-- **Agendamento automático**: rodar todo dia 1º do mês com `cron` ou GitHub Actions
 - **Variação colorida**: verde para alta e vermelho para queda, no Excel e no e-mail
 - **Semana incompleta destacada**: marcar no gráfico semanal o bloco final do mês
   (ex.: 29–31), que tem menos dias e parece uma queda

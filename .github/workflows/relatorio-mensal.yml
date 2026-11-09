@@ -1,0 +1,96 @@
+# Workflow do GitHub Actions: roda o pipeline mensal sozinho, na nuvem.
+#
+# SEMPRE em --dry-run: o e-mail nunca é enviado, só a prévia é gerada. Por isso
+# nenhum Secret (senha ou e-mail) é necessário. O relatório, a prévia do e-mail
+# e os logs ficam para download na página da execução (aba Actions).
+# O envio real é feito localmente, com o arquivo .env.
+
+name: Relatório mensal
+
+on:
+  # Agendamento: o cron do GitHub usa o horário UTC.
+  # 8h de Brasília = 11h UTC (o Brasil não tem horário de verão desde 2019).
+  # Campos: minuto, hora, dia do mês, mês, dia da semana -> todo dia 1º às 11h UTC.
+  schedule:
+    - cron: "0 11 1 * *"
+
+  # Gatilho manual: botão "Run workflow" na aba Actions.
+  workflow_dispatch:
+    inputs:
+      mes:
+        description: "Mês no formato AAAA-MM (vazio = mês anterior ao atual)"
+        required: false
+        default: ""
+        type: string
+
+# O workflow só precisa ler o código do repositório.
+permissions:
+  contents: read
+
+jobs:
+  relatorio:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar o código do repositório
+        uses: actions/checkout@v4
+
+      - name: Instalar o Python (com cache do pip)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Instalar as dependências
+        run: pip install -r requirements.txt
+
+      # Se algum teste falhar, o job para aqui e o relatório não é gerado.
+      - name: Rodar os testes
+        run: python -m pytest -v
+
+      # O mês digitado chega por variável de ambiente (MES_INFORMADO), e não
+      # colado direto no comando: assim um texto malicioso não vira comando.
+      - name: Definir o mês do relatório e o mês anterior
+        env:
+          MES_INFORMADO: ${{ inputs.mes }}
+        run: |
+          if [ -z "$MES_INFORMADO" ]; then
+            # Vazio (ou execução agendada): mês anterior ao atual.
+            MES=$(date -d "$(date +%Y-%m-01) -1 month" +%Y-%m)
+          else
+            MES="$MES_INFORMADO"
+          fi
+
+          if ! [[ "$MES" =~ ^[0-9]{4}-(0[1-9]|1[0-2])$ ]]; then
+            echo "::error::Mês inválido: '$MES'. Use o formato AAAA-MM, ex.: 2026-10."
+            exit 1
+          fi
+
+          MES_ANTERIOR=$(date -d "$MES-01 -1 month" +%Y-%m)
+          echo "Relatório de $MES (comparado com $MES_ANTERIOR)"
+
+          # GITHUB_ENV: as variáveis gravadas aqui valem nos passos seguintes.
+          echo "MES=$MES" >> "$GITHUB_ENV"
+          echo "MES_ANTERIOR=$MES_ANTERIOR" >> "$GITHUB_ENV"
+
+      # Cada execução começa numa máquina zerada. Processar o mês anterior
+      # (sem e-mail) cria a base que o relatório usa para calcular a variação.
+      - name: Processar o mês anterior (base para a comparação)
+        run: python main.py --mes "$MES_ANTERIOR" --sem-email
+
+      - name: Rodar o pipeline (e-mail só em prévia)
+        run: python main.py --mes "$MES" --dry-run
+
+      # if: always() -> sobe os arquivos mesmo se um passo anterior falhar
+      # (os logs ajudam a entender o que deu errado).
+      - name: Salvar relatório, prévia do e-mail e logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: relatorio-${{ env.MES }}
+          path: |
+            output/relatorio_vendas_${{ env.MES }}.xlsx
+            output/previa_email.html
+            logs/
+          if-no-files-found: warn
